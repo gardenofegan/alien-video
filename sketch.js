@@ -3,7 +3,7 @@ let poseNet;
 let poses = [];
 let stars = [];
 
-let smoothedPoses = [];
+let smoothedPose = null;
 const smoothingFactor = 0.8;
 
 function setup() {
@@ -31,17 +31,15 @@ function setup() {
   poseNet = ml5.poseNet(video, modelReady);
   poseNet.on('pose', (results) => {
     if (results.length > 0) {
-      if (smoothedPoses.length === 0) {
-        smoothedPoses = results;
+      const detectedPose = results[0].pose;
+      if (!smoothedPose) {
+        smoothedPose = detectedPose;
       } else {
-        results.forEach((pose, i) => {
-          if (!smoothedPoses[i]) smoothedPoses[i] = pose;
-          for (let j = 0; j < pose.pose.keypoints.length; j++) {
-            const point = pose.pose.keypoints[j];
-            smoothedPoses[i].pose[point.part].x = lerp(smoothedPoses[i].pose[point.part].x, point.position.x, 1 - smoothingFactor);
-            smoothedPoses[i].pose[point.part].y = lerp(smoothedPoses[i].pose[point.part].y, point.position.y, 1 - smoothingFactor);
-          }
-        });
+        for (let keypoint of detectedPose.keypoints) {
+          const part = keypoint.part;
+          smoothedPose[part].x = lerp(smoothedPose[part].x, keypoint.position.x, 1 - smoothingFactor);
+          smoothedPose[part].y = lerp(smoothedPose[part].y, keypoint.position.y, 1 - smoothingFactor);
+        }
       }
     }
   });
@@ -71,9 +69,9 @@ function draw() {
   background(0);
   drawStars();
   
-  // Draw aliens for each detected pose
-  for (let i = 0; i < smoothedPoses.length; i++) {
-    drawAlien(smoothedPoses[i].pose);
+  // Draw alien if a pose is detected
+  if (smoothedPose) {
+    drawAlien(smoothedPose);
   }
 }
 
