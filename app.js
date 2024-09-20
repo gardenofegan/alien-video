@@ -1,7 +1,8 @@
 const video = document.getElementById('video');
 const canvas = document.getElementById('output');
 
-let scene, camera, renderer, mixer, clock, alienModel;
+let scene, camera, renderer, clock;
+let alienModels = new Map();
 
 async function setupCamera() {
     const stream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -39,33 +40,51 @@ function initThreeJS() {
     directionalLight.position.set(0, 1, 1).normalize();
     scene.add(directionalLight);
 
-    // Load the model
-    const loader = new THREE.GLTFLoader();
-    loader.load('https://threejs.org/examples/models/gltf/Xbot.glb', (gltf) => {
-        alienModel = gltf.scene;
-        
-        // Make the model green
-        alienModel.traverse((child) => {
-            if (child.isMesh) {
-                child.material.color.setHex(0x00ff00);
-            }
-        });
+    // Remove the single model loading code
+    // We'll create models dynamically for each detected person
+}
 
-        // Scale and position the model
-        alienModel.scale.set(50, 50, 50);
-        scene.add(alienModel);
+function createAlienModel() {
+    return new Promise((resolve) => {
+        const loader = new THREE.GLTFLoader();
+        loader.load('https://threejs.org/examples/models/gltf/Xbot.glb', (gltf) => {
+            const alienModel = gltf.scene;
+            
+            alienModel.traverse((child) => {
+                if (child.isMesh) {
+                    if (child.name.toLowerCase().includes('eye')) {
+                        child.material = new THREE.MeshBasicMaterial({ color: 0x000000 });
+                    } else {
+                        child.material.color.setHex(0x00ff00);
+                    }
+                }
+            });
 
-        // Set up animation mixer
-        mixer = new THREE.AnimationMixer(alienModel);
-        gltf.animations.forEach((clip) => {
-            mixer.clipAction(clip).play();
+            alienModel.scale.set(50, 50, 50);
+            scene.add(alienModel);
+
+            resolve(alienModel);
         });
     });
 }
 
 function updateAlienBody(poses) {
-    if (poses.length > 0 && alienModel) {
-        const keypoints = poses[0].keypoints;
+    // Remove models for people who are no longer detected
+    for (let [id, model] of alienModels) {
+        if (!poses.some(pose => pose.id === id)) {
+            scene.remove(model);
+            alienModels.delete(id);
+        }
+    }
+
+    poses.forEach(async (pose) => {
+        let alienModel = alienModels.get(pose.id);
+        if (!alienModel) {
+            alienModel = await createAlienModel();
+            alienModels.set(pose.id, alienModel);
+        }
+
+        const keypoints = pose.keypoints;
         const positions = {};
 
         keypoints.forEach(keypoint => {
@@ -82,45 +101,50 @@ function updateAlienBody(poses) {
             alienModel.position.set(positions.nose.x, positions.nose.y, 0);
         }
 
-        // Update arm rotations
-        if (positions.leftShoulder && positions.leftElbow) {
-            const leftArm = alienModel.getObjectByName('mixamorigLeftArm');
-            if (leftArm) {
-                const angle = Math.atan2(positions.leftElbow.y - positions.leftShoulder.y, positions.leftElbow.x - positions.leftShoulder.x);
-                leftArm.rotation.z = -angle;
-            }
-        }
-        if (positions.rightShoulder && positions.rightElbow) {
-            const rightArm = alienModel.getObjectByName('mixamorigRightArm');
-            if (rightArm) {
-                const angle = Math.atan2(positions.rightElbow.y - positions.rightShoulder.y, positions.rightElbow.x - positions.rightShoulder.x);
-                rightArm.rotation.z = angle;
+        // Head rotation
+        if (positions.leftEye && positions.rightEye) {
+            const head = alienModel.getObjectByName('mixamorigHead');
+            if (head) {
+                const angle = Math.atan2(positions.rightEye.y - positions.leftEye.y, positions.rightEye.x - positions.leftEye.x);
+                head.rotation.z = angle;
             }
         }
 
-        // Update leg rotations
-        if (positions.leftHip && positions.leftKnee) {
-            const leftUpLeg = alienModel.getObjectByName('mixamorigLeftUpLeg');
-            if (leftUpLeg) {
-                const angle = Math.atan2(positions.leftKnee.y - positions.leftHip.y, positions.leftKnee.x - positions.leftHip.x);
-                leftUpLeg.rotation.z = -angle + Math.PI / 2;
+        // Arms
+        updateLimb(alienModel, positions, 'leftShoulder', 'leftElbow', 'mixamorigLeftArm');
+        updateLimb(alienModel, positions, 'leftElbow', 'leftWrist', 'mixamorigLeftForeArm');
+        updateLimb(alienModel, positions, 'rightShoulder', 'rightElbow', 'mixamorigRightArm');
+        updateLimb(alienModel, positions, 'rightElbow', 'rightWrist', 'mixamorigRightForeArm');
+
+        // Legs
+        updateLimb(alienModel, positions, 'leftHip', 'leftKnee', 'mixamorigLeftUpLeg');
+        updateLimb(alienModel, positions, 'leftKnee', 'leftAnkle', 'mixamorigLeftLeg');
+        updateLimb(alienModel, positions, 'rightHip', 'rightKnee', 'mixamorigRightUpLeg');
+        updateLimb(alienModel, positions, 'rightKnee', 'rightAnkle', 'mixamorigRightLeg');
+
+        // Body rotation
+        if (positions.leftShoulder && positions.rightShoulder) {
+            const spine = alienModel.getObjectByName('mixamorigSpine');
+            if (spine) {
+                const angle = Math.atan2(positions.rightShoulder.y - positions.leftShoulder.y, positions.rightShoulder.x - positions.leftShoulder.x);
+                spine.rotation.z = angle;
             }
         }
-        if (positions.rightHip && positions.rightKnee) {
-            const rightUpLeg = alienModel.getObjectByName('mixamorigRightUpLeg');
-            if (rightUpLeg) {
-                const angle = Math.atan2(positions.rightKnee.y - positions.rightHip.y, positions.rightKnee.x - positions.rightHip.x);
-                rightUpLeg.rotation.z = -angle - Math.PI / 2;
-            }
+    });
+}
+
+function updateLimb(model, positions, jointA, jointB, boneName) {
+    if (positions[jointA] && positions[jointB]) {
+        const bone = model.getObjectByName(boneName);
+        if (bone) {
+            const angle = Math.atan2(positions[jointB].y - positions[jointA].y, positions[jointB].x - positions[jointA].x);
+            bone.rotation.z = -angle + Math.PI / 2;
         }
     }
 }
 
 function animate() {
     requestAnimationFrame(animate);
-    if (mixer) {
-        mixer.update(clock.getDelta());
-    }
     renderer.render(scene, camera);
 }
 
@@ -133,7 +157,10 @@ async function main() {
     async function detectPose() {
         const poses = await net.estimatePoses(video, {
             flipHorizontal: false,
-            decodingMethod: 'single-person'
+            decodingMethod: 'multi-person',
+            maxDetections: 5,
+            scoreThreshold: 0.5,
+            nmsRadius: 20
         });
 
         updateAlienBody(poses);
